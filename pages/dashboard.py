@@ -98,9 +98,6 @@ def create_dashboard_page(data):
                     text(value="Custom Rules", class_name="card-title")
                     text(value=13, class_name="card-amount")
         
-
-            
-            html("br")
             with layout(columns="1 1"):
                 with part(class_name="recent-detection"):
                     text(value="### Recent Detection (xxx)", mode="md" )
