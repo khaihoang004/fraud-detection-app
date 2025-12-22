@@ -1,0 +1,17 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install deps
+RUN pip install --no-cache-dir kafka-python pandas
+
+# Copy app code
+COPY producer/producer.py /app/producer.py
+COPY data/creditcard.csv /app/data/creditcard.csv
+
+ENV KAFKA_BOOTSTRAP_SERVERS=kafka:9092 \
+    KAFKA_TOPIC=creditcard-transactions \
+    CSV_PATH=/app/data/creditcard.csv \
+    SLEEP_SECS=0.01
+
+CMD ["python", "producer/producer.py"]
