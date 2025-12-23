@@ -22,7 +22,7 @@ services:
     working_dir: /app
     volumes:
       - ./:/app
-    command: bash -lc "pip install -U redis && python consumer.py"
+    command: bash -lc "pip -q install -U redis pandas joblib scikit-learn && python -u consumer.py"
     depends_on:
       - redis
 

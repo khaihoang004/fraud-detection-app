@@ -4,8 +4,6 @@ import redis
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
 stream = "cc_stream"
 group = "cc_group"
-RESET_STREAM = True
-
 
 def safe(call, default=None):
     try:
@@ -13,8 +11,7 @@ def safe(call, default=None):
     except Exception:
         return default
 
-if RESET_STREAM:
-    r.delete("cc_stream")
+
     
 while True:
     xlen = safe(lambda: r.xlen(stream), 0)
