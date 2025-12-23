@@ -1,10 +1,48 @@
-version: "3.9"
 services:
   redis:
     image: redis:7-alpine
     container_name: redis-stream
     ports:
       - "6379:6379"
+    restart: unless-stopped
+
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: redisinsight
+    ports:
+      - "5540:5540"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  cassandra:
+    build: ./cassandra
+    # If you don't need custom image, replace the two lines above with:
+    # image: cassandra:4.1
+    container_name: cassandra
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    healthcheck:
+      test: [ "CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' 127.0.0.1 9042 || exit 1" ]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+    restart: unless-stopped
+
+  cassandra_init:
+    image: cassandra:4.1
+    container_name: cassandra-init
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    volumes:
+      - ./cassandra/cassandra-setup.cql:/cassandra-setup.cql:ro
+    entrypoint: [ "/bin/bash", "-lc" ]
+    command: >
+      "cqlsh cassandra 9042 -f /cassandra-setup.cql && echo '✅ CQL applied'"
+    restart: "no"
 
   producer:
     image: python:3.10-slim
@@ -12,9 +50,10 @@ services:
     working_dir: /app
     volumes:
       - ./:/app
-    command: bash -lc "pip install -U redis pandas && python producer.py"
+    command: bash -lc "pip -q install -U redis pandas && python -u producer.py"
     depends_on:
       - redis
+    restart: on-failure
 
   consumer:
     image: python:3.10-slim
@@ -22,9 +61,13 @@ services:
     working_dir: /app
     volumes:
       - ./:/app
-    command: bash -lc "pip -q install -U redis pandas joblib scikit-learn && python -u consumer.py"
+    command: bash -lc "pip -q install -U redis pandas joblib scikit-learn cassandra-driver && python -u consumer.py"
     depends_on:
-      - redis
+      cassandra_init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+    restart: on-failure
 
   monitor:
     image: python:3.10-slim
@@ -33,11 +76,9 @@ services:
     volumes:
       - ./:/app
     command: bash -lc "pip -q install -U redis && python -u monitor.py"
-    depends_on: [redis]
+    depends_on:
+      - redis
+    restart: on-failure
 
-  redisinsight:
-    image: redis/redisinsight:latest
-    container_name: redisinsight
-    ports:
-      - "5540:5540"
-    depends_on: [redis]
+volumes:
+  cassandra_data:

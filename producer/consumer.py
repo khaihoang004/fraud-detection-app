@@ -3,26 +3,29 @@ import time
 import redis
 import joblib
 import pandas as pd
+from datetime import datetime, timezone
+from cassandra.cluster import Cluster
+from cassandra.query import PreparedStatement
 
+# ---------- Redis ----------
 STREAM_IN = os.getenv("STREAM_IN", "cc_stream")
 GROUP = os.getenv("GROUP", "cc_group")
 CONSUMER = os.getenv("CONSUMER", "infer-1")
 
-STREAM_OUT = os.getenv("STREAM_OUT", "cc_scored_stream")
-WRITE_SCORED = os.getenv("WRITE_SCORED", "1") == "1"
-
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "50"))
 BLOCK_MS = int(os.getenv("BLOCK_MS", "5000"))
 
-MODEL_PATH = os.getenv("MODEL_PATH", "LogisticRegression.pkl")
-
-# ✅ Use only features your model was trained on
-FEATURES = ["V17", "V14", "V12", "V10", "V16", "V3", "V7"]
-
-# Optional: keep some passthrough fields for dashboard display (if present)
-PASSTHROUGH = ["Time", "Amount"]  # safe to keep; will be included if producer sends them
-
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
+
+# ---------- Cassandra ----------
+CASS_HOST = os.getenv("CASS_HOST", "cassandra")
+CASS_KEYSPACE = os.getenv("CASS_KEYSPACE", "fraud_detection")
+CASS_TABLE = os.getenv("CASS_TABLE", "predictions_by_day")  # table name from .cql
+
+# ---------- Model ----------
+MODEL_PATH = os.getenv("MODEL_PATH", "LogisticRegression.pkl")
+FEATURES = ["V17", "V14", "V12", "V10", "V16", "V3", "V7"]
+PASSTHROUGH = ["Time", "Amount", "Class"]  # must exist in producer
 
 
 def wait_for_redis():
@@ -45,47 +48,77 @@ def ensure_group():
         raise
 
 
+def wait_for_cassandra():
+    while True:
+        try:
+            cluster = Cluster([CASS_HOST])
+            session = cluster.connect()
+            return cluster, session
+        except Exception as e:
+            print(f"Waiting for Cassandra... ({e})", flush=True)
+            time.sleep(2)
+
+
 def parse_batch(messages):
-    """
-    Convert Redis messages -> DataFrame + ids + passthrough fields.
-    Skips records missing required FEATURES or with non-float values.
-    """
     rows = []
     ids = []
-    passthrough_rows = []
+    meta = []
     skipped = 0
 
     for msg_id, fields in messages:
         try:
-            row = {f: float(fields[f]) for f in FEATURES}
-            rows.append(row)
+            # model features
+            xrow = {f: float(fields[f]) for f in FEATURES}
+
+            # required DB fields
+            t = fields.get("Time")
+            amt = fields.get("Amount")
+            cls = fields.get("Class")
+            if t is None or amt is None or cls is None:
+                raise KeyError("Missing Time/Amount/Class")
+
+            rows.append(xrow)
             ids.append(msg_id)
-
-            extra = {}
-            for k in PASSTHROUGH:
-                if k in fields:
-                    extra[k] = fields[k]
-            passthrough_rows.append(extra)
-
+            meta.append(
+                {
+                    "Time": float(t),
+                    "Amount": float(amt),
+                    "Class": int(float(cls)),  # sometimes "0.0"
+                }
+            )
         except Exception:
             skipped += 1
 
     if skipped:
-        print(f"⚠️ skipped {skipped} records (missing/bad required features)", flush=True)
+        print(f"⚠️ skipped {skipped} records (missing/bad required fields)", flush=True)
 
     if not rows:
         return None, [], []
 
     X = pd.DataFrame(rows, columns=FEATURES)
-    return X, ids, passthrough_rows
+    return X, ids, meta
 
 
 def main():
+    # --- Redis ---
     wait_for_redis()
+    ensure_group()
     print("Redis ready ✅", flush=True)
 
-    ensure_group()
+    # --- Cassandra ---
+    cluster, session = wait_for_cassandra()
+    print("Cassandra ready ✅", flush=True)
 
+    # Fully qualify table so we don't depend on USE/set_keyspace
+    insert_stmt: PreparedStatement = session.prepare(
+        f"""
+        INSERT INTO {CASS_KEYSPACE}.{CASS_TABLE}
+        (day, event_ts, event_id, time, amount, class, prediction_score)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """
+    )
+
+    # --- Model ---
     print(f"Loading model from {MODEL_PATH}...", flush=True)
     model = joblib.load(MODEL_PATH)
     print(f"Model loaded ✅ ({type(model).__name__})", flush=True)
@@ -93,65 +126,56 @@ def main():
     while True:
         try:
             resp = r.xreadgroup(
-                GROUP,
-                CONSUMER,
-                {STREAM_IN: ">"},
-                count=BATCH_SIZE,
-                block=BLOCK_MS,
+                GROUP, CONSUMER, {STREAM_IN: ">"}, count=BATCH_SIZE, block=BLOCK_MS
             )
-
             if not resp:
                 continue
 
             _, messages = resp[0]
-            X, msg_ids, passthrough_rows = parse_batch(messages)
-
+            X, msg_ids, meta = parse_batch(messages)
             if X is None:
                 continue
 
-            # ---- Inference (batch) ----
-            try:
-                if hasattr(model, "predict_proba"):
-                    fraud_prob = model.predict_proba(X)[:, 1]
-                    pred = (fraud_prob >= 0.5).astype(int)
-                else:
-                    pred = model.predict(X)
-                    fraud_prob = None
-            except Exception as e:
-                print(f"❌ model inference failed on batch: {e}", flush=True)
-                continue
+            # inference (use probability if available)
+            if hasattr(model, "predict_proba"):
+                probs = model.predict_proba(X)[:, 1]
+            else:
+                # fallback: treat predict() output as score
+                probs = model.predict(X).astype(float)
 
-            # ---- Output + ACK (pipeline) ----
+            # write to cassandra + ack to redis
+            now = datetime.now(timezone.utc)
+            day = now.strftime("%Y%m%d")  # partition key like '20251224'
+
             pipe = r.pipeline()
+            wrote = 0
 
-            if WRITE_SCORED:
-                for i, msg_id in enumerate(msg_ids):
-                    out_fields = {
-                        "src_msg_id": msg_id,
-                        "pred": str(int(pred[i])),
-                    }
-                    if fraud_prob is not None:
-                        out_fields["fraud_prob"] = str(float(fraud_prob[i]))
+            for i, msg_id in enumerate(msg_ids):
+                event_id = msg_id
+                prediction_score = float(probs[i])
 
-                    # attach optional passthrough info for dashboard readability
-                    for k, v in passthrough_rows[i].items():
-                        out_fields[k] = str(v)
+                # insert to cassandra first
+                session.execute(
+                    insert_stmt,
+                    (
+                        day,
+                        now,
+                        event_id,
+                        float(meta[i]["Time"]),
+                        float(meta[i]["Amount"]),
+                        int(meta[i]["Class"]),
+                        prediction_score,
+                    ),
+                )
 
-                    pipe.xadd(STREAM_OUT, out_fields)
-
-            for msg_id in msg_ids:
+                # ack only after insert success
                 pipe.xack(STREAM_IN, GROUP, msg_id)
+                wrote += 1
 
             pipe.execute()
 
-            # ---- Lightweight log ----
-            if fraud_prob is not None:
-                print(
-                    f"✅ batch={len(msg_ids)} | avg_prob={float(pd.Series(fraud_prob).mean()):.4f} | fraud={int(pred.sum())}",
-                    flush=True,
-                )
-            else:
-                print(f"✅ batch={len(msg_ids)} | fraud={int(pd.Series(pred).sum())}", flush=True)
+            avgp = float(pd.Series([float(x) for x in probs]).mean())
+            print(f"✅ wrote {wrote} rows | avg_score={avgp:.4f}", flush=True)
 
         except redis.ResponseError as e:
             if "NOGROUP" in str(e):
@@ -159,6 +183,13 @@ def main():
                 ensure_group()
                 continue
             raise
+
+        except Exception as e:
+            # If Cassandra fails, DO NOT ack -> messages stay pending
+            print(f"❌ pipeline error: {e}", flush=True)
+            time.sleep(1)
+
+    cluster.shutdown()
 
 
 if __name__ == "__main__":
