@@ -6,7 +6,7 @@ from pages.rules import create_rule_page
 from pages.details import create_detail_page
 from taipy.gui.builder import Page, menu, content
 
-data = pd.read_csv("data/creditcard_data.csv")
+data = pd.read_csv("data/creditcard.csv")
 v_cols = [f"V{i}" for i in range(1, 29)]
 
 data[v_cols] = data[v_cols].round(3)
