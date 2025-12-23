@@ -1,64 +1,57 @@
-import os
-import json
-import time
 import pandas as pd
 import redis
+import time
+import random
 
-# Redis Configuration
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-STREAM_KEY = os.getenv("STREAM_KEY", "creditcard-transactions")
-CSV_PATH = os.getenv("CSV_PATH", "data/creditcard.csv")
-SLEEP_SECS = float(os.getenv("SLEEP_SECS", "0.01"))  # small delay between messages
+r = redis.Redis(host="redis", port=6379, decode_responses=True)
+stream = "cc_stream"
 
-def row_to_message(row):
-    # Convert pandas Series -> normal dict
-    # Redis Streams stores keys/values as strings/bytes. 
-    # We can store the whole JSON as a single field or individual fields.
-    # Storing as individual fields for flexibility.
-    d = row.to_dict()
-    # Ensure all values are strings or convertible
-    return {k: str(v) for k, v in d.items()}
+df = pd.read_csv("creditcard.csv")
 
-def main():
-    print(f"Connecting to Redis at {REDIS_HOST}:{REDIS_PORT}...")
-    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+MIN_DELAY = 3
+MAX_DELAY = 5
 
-    # Check connection
-    try:
-        r.ping()
-        print("Connected to Redis!")
-    except redis.ConnectionError as e:
-        print(f"Failed to connect to Redis: {e}")
-        return
+MAX_ROWS = 1000  # or 100, 500, etc.
+#"Time","V1","V2","V3","V4","V5","V6","V7","V8","V9","V10","V11","V12","V13","V14","V15","V16","V17","V18","V19","V20","V21","V22","V23","V24","V25","V26","V27","V28","Amount","Class"
 
-    # Check if CSV exists, handle relative path logic if needed
-    # The original was /app/data/..., here we default to data/creditcard.csv relative to CWD
-    if not os.path.exists(CSV_PATH):
-        # Fallback for local run from project root
-        potential_path = os.path.join("data", "creditcard.csv")
-        if os.path.exists(potential_path):
-            csv_path_to_use = potential_path
-        else:
-            print(f"CSV file not found at {CSV_PATH} or {potential_path}")
-            return
-    else:
-        csv_path_to_use = CSV_PATH
+for idx, row in df.head(MAX_ROWS).iterrows():
+    event = {
+        "Time": str(row["Time"]),
+        "V1": str(row["V1"]),
+        "V2": str(row["V2"]),
+        "V3": str(row["V3"]),
+        "V4": str(row["V4"]),
+        "V5": str(row["V5"]),
+        "V6": str(row["V6"]),
+        "V7": str(row["V7"]),
+        "V8": str(row["V8"]),
+        "V9": str(row["V9"]),
+        "V10": str(row["V10"]),
+        "V11": str(row["V11"]),
+        "V12": str(row["V12"]),
+        "V13": str(row["V13"]),
+        "V14": str(row["V14"]),
+        "V15": str(row["V15"]),
+        "V16": str(row["V16"]),
+        "V17": str(row["V17"]),
+        "V18": str(row["V18"]),
+        "V19": str(row["V19"]),
+        "V20": str(row["V20"]),
+        "V21": str(row["V21"]),
+        "V22": str(row["V22"]),
+        "V23": str(row["V23"]),
+        "V24": str(row["V24"]),
+        "V25": str(row["V25"]),
+        "V26": str(row["V26"]),
+        "V27": str(row["V27"]),
+        "V28": str(row["V28"]),
+        "Amount": str(row["Amount"]),
+        "Class": str(row["Class"])
+    }
 
-    print(f"Loading CSV from {csv_path_to_use}...")
-    df = pd.read_csv(csv_path_to_use)
+    msg_id = r.xadd(stream, event)
+    delay = random.uniform(MIN_DELAY, MAX_DELAY)
 
-    print(f"Sending {len(df)} messages to stream '{STREAM_KEY}'")
-    for idx, row in df.iterrows():
-        msg = row_to_message(row)
-        # xadd returns the ID of the added message
-        r.xadd(STREAM_KEY, msg)
+    print(f"PUSH {msg_id} | Class={row['Class']} | next in {delay:.2f}s")
 
-        if idx % 1000 == 0:
-            print(f"Sent {idx} messages...")
-        time.sleep(SLEEP_SECS)
-
-    print("Done sending all messages.")
-
-if __name__ == "__main__":
-    main()
+    time.sleep(delay)

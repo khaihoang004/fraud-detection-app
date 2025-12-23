@@ -1,0 +1,43 @@
+version: "3.9"
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: redis-stream
+    ports:
+      - "6379:6379"
+
+  producer:
+    image: python:3.10-slim
+    container_name: cc-producer
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command: bash -lc "pip install -U redis pandas && python producer.py"
+    depends_on:
+      - redis
+
+  consumer:
+    image: python:3.10-slim
+    container_name: cc-consumer
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command: bash -lc "pip install -U redis && python consumer.py"
+    depends_on:
+      - redis
+
+  monitor:
+    image: python:3.10-slim
+    container_name: cc-monitor
+    working_dir: /app
+    volumes:
+      - ./:/app
+    command: bash -lc "pip -q install -U redis && python -u monitor.py"
+    depends_on: [redis]
+
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: redisinsight
+    ports:
+      - "5540:5540"
+    depends_on: [redis]

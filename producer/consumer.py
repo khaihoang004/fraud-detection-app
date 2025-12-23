@@ -1,46 +1,25 @@
-import os
-import time
 import redis
 
-# Redis Configuration
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-STREAM_KEY = os.getenv("STREAM_KEY", "creditcard-transactions")
-GROUP_NAME = os.getenv("GROUP_NAME", "fraud-detection-group")
-CONSUMER_NAME = os.getenv("CONSUMER_NAME", "consumer-1")
+r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
-def main():
-    print(f"Connecting to Redis at {REDIS_HOST}:{REDIS_PORT}...")
-    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+stream = "cc_stream"
+group = "cc_group"
+consumer = "c1"
 
-    # Create consumer group if not exists
-    try:
-        r.xgroup_create(STREAM_KEY, GROUP_NAME, id="0", mkstream=True)
-        print(f"Created consumer group '{GROUP_NAME}'")
-    except redis.exceptions.ResponseError as e:
-        if "BUSYGROUP" in str(e):
-            print(f"Consumer group '{GROUP_NAME}' already exists.")
-        else:
-            print(f"Error creating group: {e}")
-            return
+# create consumer group once
+try:
+    r.xgroup_create(stream, group, id="0", mkstream=True)
+except redis.ResponseError as e:
+    if "BUSYGROUP" in str(e):
+        pass
 
-    print(f"Consuming from stream '{STREAM_KEY}' as '{CONSUMER_NAME}' in group '{GROUP_NAME}'...")
-    
-    while True:
-        # Read new messages
-        # BLOCK=1000 means wait up to 1 second for new messages
-        # COUNT=10 reads up to 10 messages
-        entries = r.xreadgroup(GROUP_NAME, CONSUMER_NAME, {STREAM_KEY: ">"}, count=10, block=1000)
+print("Consumer watching stream...")
 
-        if entries:
-            for stream, messages in entries:
-                for message_id, message_data in messages:
-                    print(f"Processed message {message_id}: {message_data}")
-                    # Acknowledge the message (simulating successful processing)
-                    r.xack(STREAM_KEY, GROUP_NAME, message_id)
-        else:
-            # No new messages, tiny sleep to avoid tight loop just in case
-            time.sleep(0.1)
-
-if __name__ == "__main__":
-    main()
+while True:
+    msgs = r.xreadgroup(group, consumer, {stream: ">"}, count=5, block=5000)
+    if not msgs:
+        continue
+    for _s, events in msgs:
+        for msg_id, fields in events:
+            print(f"CONSUME {msg_id} | Time={fields['Time']} | Amount={fields['Amount']} | Class={fields['Class']}")
+            r.xack(stream, group, msg_id)
