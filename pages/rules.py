@@ -1,9 +1,11 @@
-from taipy.gui.builder import Page, part, layout, text, table, input, selector, button, html
+from taipy.gui.builder import Page, part, layout, text, table, input, selector, button
+from taipy.gui import State
 import pandas as pd
-from taipy.gui import Gui, State
-import re
-import copy
-    
+import requests
+import uuid
+
+RULE_API_URL = "http://localhost:8000/rules"
+
 def create_rule_page(data):
     OPS = [">", "<", ">=", "<=", "==", "!=", "contains", "not contains"]
     RULES_FILENAME = r"data\custom_rules.json"
@@ -20,70 +22,52 @@ def create_rule_page(data):
     
     def add_rule(state):
         if not state.selected_column or not state.rule_value:
-            print("Cảnh báo: Cần nhập đầy đủ Cột và Giá trị.")
+            print("⚠️ Missing column or value")
             return
 
-        new_rule = {
-            'column': state.selected_column,
-            'operator': state.selected_operator,
-            'value': state.rule_value
+        rule = {
+            "rule_id": f"R_{state.selected_column.upper()}_{uuid.uuid4().hex[:6]}",
+            "template": "condition",
+            "params": {
+                "field": state.selected_column,
+                "op": state.selected_operator,
+                "value": state.rule_value
+            },
+            "severity": "high",
+            "enabled": True
         }
 
-        state.rules_list = state.rules_list + [new_rule]
-        state.rules_df = pd.DataFrame(state.rules_list)
+        state.rules_list = state.rules_list + [rule]
+        state.rules_df = pd.DataFrame([
+            {
+                "column": r["params"]["field"],
+                "operator": r["params"]["op"],
+                "value": r["params"]["value"]
+            }
+            for r in state.rules_list
+        ])
 
         state.rule_value = ""
-        apply_rules(state)
-
-    def apply_rules(state):
-        df_temp = state.df.copy()
-
-        for rule in state.rules_list:
-            col = rule['column']
-            op = rule['operator']
-            val = str(rule['value']).strip()
-            
-            try:
-                if op in [">", "<", ">=", "<=", "==", "!="]:
-                    if df_temp[col].dtype in ['int64', 'float64']:
-                        try:
-                            val_typed = float(val)
-                            condition = f"`{col}` {op} {val_typed}"
-                            df_temp = df_temp.query(condition)
-                        except ValueError:
-                            print(f"Error '{val}' is not a valid number for '{col}'.")
-                            continue
-                    else:
-                        condition = f"`{col}` {op} '{val}'"
-                        df_temp = df_temp.query(condition)
-
-                elif op == "contains":
-                    df_temp = df_temp[df_temp[col].astype(str).str.contains(str(val), case=False, na=False)]
-                
-                elif op == "not contains":
-                    df_temp = df_temp[~df_temp[col].astype(str).str.contains(str(val), case=False, na=False)]
-
-            except Exception as e:
-                print(f"Lỗi khi áp dụng quy tắc '{rule}': {e}")
-                continue
-
-        state.filtered_df = df_temp
 
     def reset_all(state):
         state.rules_list = []
         state.rules_df = pd.DataFrame(columns=['column', 'operator', 'value'])
-        state.filtered_df = state.df.copy()
-    
+
     def save_rules(state):
-        """Lưu rules_list hiện tại vào file JSON."""
-        try:
-            # Ghi rules_list vào file JSON
-            with open(RULES_FILENAME, 'w', encoding='utf-8') as f:
-                json.dump(state.rules_list, f, indent=4)
-            print(f"✅ Đã lưu {len(state.rules_list)} quy tắc vào file '{RULES_FILENAME}'.")
-        except Exception as e:
-            print(f"❌ Lỗi khi lưu quy tắc vào file JSON: {e}")
-            
+        success = 0
+        for rule in state.rules_list:
+            try:
+                resp = requests.post(RULE_API_URL, json=rule, timeout=3)
+                if resp.status_code == 200:
+                    success += 1
+                else:
+                    print(f"Failed to save rule {rule['rule_id']}: {resp.text}")
+            except Exception as e:
+                print(f"API error: {e}")
+
+        print(f"✅ Sent {success}/{len(state.rules_list)} rules to Rule Service")
+
+
     page = Page()
     with page:
         

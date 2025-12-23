@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+kafka-python
+pyspark
+cassandra-driver
+taipy
+pandas==2.2.2
