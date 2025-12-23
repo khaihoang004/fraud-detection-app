@@ -6,11 +6,6 @@ from src.ui.pages.rules import create_rule_page
 # from pages.details import create_detail_page
 from taipy.gui.builder import Page, menu, content
 
-data = pd.read_csv("data/creditcard_data.csv")
-v_cols = [f"V{i}" for i in range(1, 29)]
-
-data[v_cols] = data[v_cols].round(3)
-
 # overview_page = create_overview_page(data)
 rule_page = create_rule_page()
 # detail_page = create_detail_page(data)
@@ -39,8 +34,8 @@ with root_page:
     
 pages = {
     "/": root_page,
+    # "dashboard": dashboard_page,
     "rule": rule_page,
-    # "overview": overview_page,
     # "detail": detail_page
-    }
-Gui(pages=pages, css_file="ui/static/style.css").run(port=5000, title="Dashboard", use_reloader=True, dark_mode=True)
+}
+Gui(pages=pages, css_file="static/style.css").run(port=50005, title="Dashboard", use_reloader=True, dark_mode=False)
