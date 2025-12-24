@@ -26,6 +26,17 @@ CASS_TABLE = os.getenv("CASS_TABLE", "predictions_by_day")  # table name from .c
 MODEL_PATH = os.getenv("MODEL_PATH", "LogisticRegression.pkl")
 PASSTHROUGH = ["Time", "Amount", "Class"]  # must exist in producer
 
+T_LOW = 0.15   # Example: Below 0.1 is Safe
+T_HIGH = 0.8  # Example: Above 0.9 is Fraud
+
+def classify(prob):
+    if prob < T_LOW:
+        return 'Safe'
+    elif prob > T_HIGH:
+        return 'Fraud'
+    else:
+        return 'Suspicious' # The "Warning" Zone
+
 
 def wait_for_redis():
     while True:
@@ -112,8 +123,8 @@ def main():
     insert_stmt: PreparedStatement = session.prepare(
         f"""
         INSERT INTO {CASS_KEYSPACE}.{CASS_TABLE}
-        (day, event_ts, event_id, time, amount, class, prediction_score)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        (day, event_ts, event_id, time, amount, ground_truth, prediction_score, class)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """
     )
 
@@ -143,6 +154,7 @@ def main():
                 # fallback: treat predict() output as score
                 probs = model.predict(X).astype(float)
 
+            
             # write to cassandra + ack to redis
             now = datetime.now(timezone.utc)
             day = now.strftime("%Y%m%d")  # partition key like '20251224'
@@ -153,7 +165,7 @@ def main():
             for i, msg_id in enumerate(msg_ids):
                 event_id = msg_id
                 prediction_score = float(probs[i])
-
+                ruled_class = classify(prediction_score)
                 # insert to cassandra first
                 session.execute(
                     insert_stmt,
@@ -165,6 +177,7 @@ def main():
                         float(meta[i]["Amount"]),
                         int(meta[i]["Class"]),
                         prediction_score,
+                        ruled_class
                     ),
                 )
 

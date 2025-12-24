@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS fraud_detection.predictions_by_day (
   event_id text,
   time double,
   amount double,
-  class int,
+  ground_truth int,
   prediction_score double,
+  class text,
   PRIMARY KEY ((day), event_ts, event_id)
 ) WITH CLUSTERING ORDER BY (event_ts DESC);
