@@ -24,7 +24,6 @@ CASS_TABLE = os.getenv("CASS_TABLE", "predictions_by_day")  # table name from .c
 
 # ---------- Model ----------
 MODEL_PATH = os.getenv("MODEL_PATH", "LogisticRegression.pkl")
-FEATURES = ["V17", "V14", "V12", "V10", "V16", "V3", "V7"]
 PASSTHROUGH = ["Time", "Amount", "Class"]  # must exist in producer
 
 
@@ -59,7 +58,7 @@ def wait_for_cassandra():
             time.sleep(2)
 
 
-def parse_batch(messages):
+def parse_batch(messages, features):
     rows = []
     ids = []
     meta = []
@@ -68,7 +67,7 @@ def parse_batch(messages):
     for msg_id, fields in messages:
         try:
             # model features
-            xrow = {f: float(fields[f]) for f in FEATURES}
+            xrow = {f: float(fields[f]) for f in features}
 
             # required DB fields
             t = fields.get("Time")
@@ -95,7 +94,7 @@ def parse_batch(messages):
     if not rows:
         return None, [], []
 
-    X = pd.DataFrame(rows, columns=FEATURES)
+    X = pd.DataFrame(rows, columns=features)
     return X, ids, meta
 
 
@@ -121,6 +120,7 @@ def main():
     # --- Model ---
     print(f"Loading model from {MODEL_PATH}...", flush=True)
     model = joblib.load(MODEL_PATH)
+    FEATURES = list(model.feature_names_in_)
     print(f"Model loaded ✅ ({type(model).__name__})", flush=True)
 
     while True:
@@ -132,7 +132,7 @@ def main():
                 continue
 
             _, messages = resp[0]
-            X, msg_ids, meta = parse_batch(messages)
+            X, msg_ids, meta = parse_batch(messages, FEATURES)
             if X is None:
                 continue
 
