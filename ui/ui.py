@@ -11,20 +11,14 @@ import pandas as pd
 from pages.rules import create_rule_page
 
 
-UPDATE_INTERVAL = 0.5
-NUM_RECENT_DETECTION = 5
+UPDATE_INTERVAL = 2
+NUM_RECENT_TRANSACTION = 5
+NUM_TOP_FRAUD = 5
 
 # Connect to Cassandra
 cluster = Cluster(['127.0.0.1'], port=9042)
 session = cluster.connect('fraud_detection')
 session.row_factory = dict_factory
-
-# Global state variables
-n_trans_today = 0
-fraud_count = 0
-fraud_rate = 0
-total_fraud_amount = 0
-latest_transaction = pd.DataFrame()
 
 #######################################################
 # Overview Page
@@ -54,7 +48,63 @@ def get_latest_rows(count: int) -> pd.DataFrame:
         df['prediction_score'] = pd.to_numeric(df['prediction_score'], errors='coerce').round(2)
     return df
 
+def get_avg_score_trend(time_unit="hour", day="20251224"):
+    """
+    Lấy trend prediction_score trung bình theo giờ hoặc ngày từ bảng predictions_by_day.
+    
+    time_unit: "hour" hoặc "day"
+    day: lọc dữ liệu theo ngày
+    """
+    query = f"SELECT event_ts, prediction_score FROM predictions_by_day WHERE day='{day}'"
+    rows = session.execute(query)
+    df = pd.DataFrame(list(rows))
+    
+    if df.empty:
+        return pd.DataFrame(columns=["time", "avg_score"])
+    
+    df['event_ts'] = pd.to_datetime(df['event_ts'])
+    df['prediction_score'] = pd.to_numeric(df['prediction_score'], errors='coerce')
+    
+    if time_unit == "hour":
+        df['time'] = df['event_ts'].dt.hour
+    else:
+        df['time'] = df['event_ts'].dt.date
+    
+    trend_df = df.groupby('time')['prediction_score'].mean().reset_index()
+    trend_df.rename(columns={'prediction_score': 'avg_score'}, inplace=True)
+    
+    return trend_df
 
+def get_top_fraud(n=10, day="20251224"):
+    """
+    Lấy top n giao dịch nghi ngờ (prediction_score cao nhất, class=1)
+    """
+    query = f"""
+    SELECT event_ts, event_id, amount, prediction_score 
+    FROM predictions_by_day 
+    WHERE day='{day}' AND class=1 
+    LIMIT {n}
+    ALLOW FILTERING
+    """
+    rows = session.execute(query)
+    df = pd.DataFrame(list(rows))
+    if df.empty:
+        return pd.DataFrame(columns=["event_ts", "event_id", "amount", "prediction_score"])
+    
+    df['prediction_score'] = pd.to_numeric(df['prediction_score'], errors='coerce').round(2)
+    df = df.sort_values(by="prediction_score", ascending=False).head(n)
+    
+    return df
+
+# Global state variables
+n_trans_today = 0
+fraud_count = 0
+fraud_rate = 0
+total_fraud_amount = 0
+latest_transaction = get_latest_rows(NUM_RECENT_TRANSACTION)
+score_trend_df = get_avg_score_trend()
+top_fraud_df = get_top_fraud(n=NUM_TOP_FRAUD)
+print(top_fraud_df)
 # Update data
 def update_dashboard(gui: Gui, count=10, interval=0.5):
     today = "20251224" 
@@ -87,7 +137,27 @@ def update_dashboard(gui: Gui, count=10, interval=0.5):
             print(f"Lỗi khi cập nhật: {e}")
             time.sleep(2)
             
-            
+def update_score_trend(gui: Gui, interval=900, time_unit="hour"):
+    global score_trend_df
+    while True:
+        try:
+            trend_df = get_avg_score_trend(time_unit)
+            gui.broadcast_callback(lambda state: state.assign("score_trend_df", trend_df))
+            time.sleep(interval)
+        except Exception as e:
+            print(f"Lỗi khi lấy trend prediction_score: {e}")
+            time.sleep(5)
+
+def update_top_fraud(gui: Gui, interval=60, n=5):
+    while True:
+        try:
+            top_fraud_df = get_top_fraud(n)
+            gui.broadcast_callback(lambda state: state.assign("top_fraud_df", top_fraud_df))
+            time.sleep(interval)
+        except Exception as e:
+            print(f"Lỗi khi lấy top fraud: {e}")
+            time.sleep(5)
+                      
 def score_class(score: float) -> str:
     if score >= 7.5:
         return "score-high"
@@ -122,24 +192,54 @@ with Page() as overview_page:
                     
         with layout(columns="1 1"):
             with part(class_name="recent-transaction"):
-                text(value="### Recent Transaction", mode="md")
+                text(value="### Top fraud", mode="md")
                 
-                for i in range(5):
-                    condition = f"len(latest_transaction) > {i}"
+                for i in range(NUM_TOP_FRAUD):
+                    condition = f"len(top_fraud_df) > {i}"
                     
                     with part(class_name="item"):
                         with layout(columns="3 2"):
                             with part():
-                                text(f"Event ID: {{latest_transaction.iloc[{i}]['event_id'] if {condition} else '---'}}")
+                                text(f"Event ID: {{top_fraud_df.iloc[{i}]['event_id'] if {condition} else '---'}}")
                             
                             with layout(columns="1 1"):
                                 with part(class_name="text-right"):
                                     text("Score:")
                                 
                                 with part(class_name="text-left"):
-                                    text(f"{{latest_transaction.iloc[{i}]['prediction_score'] if {condition} else '0'}}", 
-                                            class_name=f"score {{score_class(latest_transaction.iloc[{i}]['prediction_score']) if {condition} else ''}}")                                
+                                    text(f"{{top_fraud_df.iloc[{i}]['prediction_score'] if {condition} else '0'}}", 
+                                            class_name=f"score {{score_class(top_fraud_df.iloc[{i}]['prediction_score']) if {condition} else ''}}")                                
 
+            with part(class_name="recent-transaction"):
+                text(value="### Average Fraud Prediction Score over hours", mode="md")
+                chart(
+                    data="{score_trend_df}",
+                    x="time",
+                    y="avg_score",
+                    type="line"
+                )
+        
+        
+        with part(class_name="recent-transaction"):
+            text(value="### Recent Transaction", mode="md")
+            
+            for i in range(NUM_RECENT_TRANSACTION):
+                condition = f"len(latest_transaction) > {i}"
+                
+                with part(class_name="item"):
+                    with layout(columns="3 2"):
+                        with part():
+                            text(f"Event ID: {{latest_transaction.iloc[{i}]['event_id'] if {condition} else '---'}}")
+                        
+                        with layout(columns="1 1"):
+                            with part(class_name="text-right"):
+                                text("Score:")
+                            
+                            with part(class_name="text-left"):
+                                text(f"{{latest_transaction.iloc[{i}]['prediction_score'] if {condition} else '0'}}", 
+                                        class_name=f"score {{score_class(latest_transaction.iloc[{i}]['prediction_score']) if {condition} else ''}}")                                
+
+                
 menu_options = [
     ("overview", Icon("ui/static/home.png", "Overview")),
     ("rule", "Rule"),
@@ -170,8 +270,14 @@ pages = {
 }
 
 gui = Gui(pages=pages, css_file="static/style.css")
-t = Thread(target=update_dashboard, args=(gui, NUM_RECENT_DETECTION, UPDATE_INTERVAL), daemon=True)
+t = Thread(target=update_dashboard, args=(gui, NUM_RECENT_TRANSACTION, UPDATE_INTERVAL), daemon=True)
 t.start()
+
+t1 = Thread(target=update_score_trend, args=(gui,), daemon=True)
+t1.start()
+
+t2 = Thread(target=update_top_fraud, args=(gui,), daemon=True)
+t2.start()
 
 gui.run(port=50001, title="Dashboard", dark_mode=False, server_config={"socketio": {"ping_interval": 1}})
 
