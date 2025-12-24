@@ -1,0 +1,89 @@
+version: "3.9"
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: redis-stream
+    ports:
+      - "6379:6379"
+
+  producer:
+    image: python:3.10-slim
+    container_name: cc-producer
+    working_dir: /app
+    volumes:
+      - ./producer:/app
+    command: bash -lc "pip install -U redis pandas && python producer.py"
+    depends_on:
+      - redis
+
+  cassandra:
+    image: cassandra:4.1
+    container_name: cassandra
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    healthcheck:
+      test: [ "CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES' 127.0.0.1 9042 || exit 1" ]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+    restart: unless-stopped
+
+  cassandra_init:
+    image: cassandra:4.1
+    container_name: cassandra-init
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    volumes:
+      - ./producer/cassandra/cassandra-setup.cql:/cassandra-setup.cql:ro
+    entrypoint: [ "/bin/bash", "-lc" ]
+    command: >
+      "cqlsh cassandra 9042 -f /cassandra-setup.cql && echo '✅ CQL applied'"
+    restart: "no"
+
+  consumer:
+    image: python:3.10-slim
+    container_name: cc-consumer
+    working_dir: /app
+    volumes:
+      - ./producer:/app
+    command: bash -lc "pip -q install -U redis pandas joblib scikit-learn cassandra-driver && python -u consumer.py"
+    depends_on:
+      cassandra_init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+    restart: on-failure
+
+  monitor:
+    image: python:3.10-slim
+    container_name: cc-monitor
+    working_dir: /app
+    volumes:
+      - ./producer:/app
+    command: bash -lc "pip -q install -U redis && python -u monitor.py"
+    depends_on: [redis]
+
+  ui:
+    image: python:3.10-slim
+    container_name: cc-ui
+    working_dir: /app
+    volumes:
+      - ./ui:/app
+    command: bash -lc "pip install taipy redis pandas && python app.py"
+    ports:
+      - "5000:5000"
+    depends_on:
+      - redis
+
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: redisinsight
+    ports:
+      - "5540:5540"
+    depends_on: [redis]
+
+volumes:
+  cassandra_data:
