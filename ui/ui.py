@@ -7,16 +7,12 @@ from cassandra.query import dict_factory
 import random as rand
 import pandas as pd
 
-
-from pages.rules import create_rule_page
-
-
 UPDATE_INTERVAL = 2
 NUM_RECENT_TRANSACTION = 5
 NUM_TOP_FRAUD = 5
 
 # Connect to Cassandra
-cluster = Cluster(['127.0.0.1'], port=9042)
+cluster = Cluster(['cassandra'], port=9042)
 session = cluster.connect('fraud_detection')
 session.row_factory = dict_factory
 
@@ -82,7 +78,7 @@ def get_top_fraud(n=10, day="20251224"):
     query = f"""
     SELECT event_ts, event_id, amount, prediction_score 
     FROM predictions_by_day 
-    WHERE day='{day}' AND class=1 
+    WHERE day='{day}'
     LIMIT {n}
     ALLOW FILTERING
     """
@@ -260,7 +256,6 @@ with root_page:
         on_action=on_menu_action
         )
     # content("{active_page}")
-rule_page = create_rule_page()
 
 pages = {
     "/": root_page,
@@ -279,5 +274,5 @@ t1.start()
 t2 = Thread(target=update_top_fraud, args=(gui,), daemon=True)
 t2.start()
 
-gui.run(port=50001, title="Dashboard", dark_mode=False, server_config={"socketio": {"ping_interval": 1}})
+gui.run(host="0.0.0.0", port=5000, title="Dashboard", dark_mode=False, server_config={"socketio": {"ping_interval": 1}})
 

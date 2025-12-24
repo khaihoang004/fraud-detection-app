@@ -72,11 +72,14 @@ services:
     working_dir: /app
     volumes:
       - ./ui:/app
-    command: bash -lc "pip install taipy redis pandas && python app.py"
+    command: bash -lc "pip install taipy redis pandas cassandra-driver && python ui.py"
     ports:
       - "5000:5000"
     depends_on:
-      - redis
+      cassandra_init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
 
   redisinsight:
     image: redis/redisinsight:latest
