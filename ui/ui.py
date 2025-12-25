@@ -530,6 +530,6 @@ gui.run(
     host=UI_HOST,
     port=UI_PORT,
     title="Dashboard",
-    dark_mode=True,
+    dark_mode=False,
     server_config={"socketio": {"ping_interval": 1}}
 )
