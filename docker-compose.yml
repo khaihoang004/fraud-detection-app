@@ -36,7 +36,7 @@ services:
       cassandra:
         condition: service_healthy
     volumes:
-      - ./producer/cassandra/cassandra-setup.cql:/cassandra-setup.cql:ro
+      - ./processor/cassandra/cassandra-setup.cql:/cassandra-setup.cql:ro
     entrypoint: [ "/bin/bash", "-lc" ]
     command: >
       "cqlsh cassandra 9042 -f /cassandra-setup.cql &&
@@ -54,7 +54,7 @@ services:
     container_name: cc-producer
     working_dir: /app
     volumes:
-      - ./producer:/app
+      - ./processor:/app
     command: python -u producer.py
     depends_on:
       - redis
@@ -65,7 +65,7 @@ services:
     container_name: cc-consumer
     working_dir: /app
     volumes:
-      - ./producer:/app
+      - ./processor:/app
     command: python -u consumer.py
     depends_on:
       cassandra_init:
@@ -79,7 +79,7 @@ services:
     container_name: cc-monitor
     working_dir: /app
     volumes:
-      - ./producer:/app
+      - ./processor:/app
     command: python -u monitor.py
     depends_on:
       - redis

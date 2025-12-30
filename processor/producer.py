@@ -6,7 +6,7 @@ import random
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
 stream = "cc_stream"
 
-df = pd.read_csv("creditcard.csv")
+df = pd.read_csv("data/creditcard.csv")
 
 MIN_DELAY = 3
 MAX_DELAY = 5

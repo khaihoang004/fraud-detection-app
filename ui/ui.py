@@ -29,14 +29,14 @@ UI_PORT = int(os.getenv("UI_PORT", 5002))
 
 # Extract data from database
 def get_total_transactions(day: str) -> int:
-    query = f"SELECT COUNT(*) FROM predictions_by_day WHERE day = '{day}'"
+    query = f"SELECT COUNT(*) FROM predictions_by_day_asc WHERE day = '{day}'"
     result = session.execute(query).one()
     return result['count']
 
 def get_fraud_count(day: str) -> int:
     query = f"""
     SELECT COUNT(*) 
-    FROM predictions_by_day 
+    FROM predictions_by_day_asc 
     WHERE day = '{day}' AND class = 'Fraud'
     ALLOW FILTERING
     """
@@ -52,7 +52,7 @@ def get_fraud_suspicious_count_by_hour(day: str) -> pd.DataFrame:
     """
     query = f"""
     SELECT event_ts, class
-    FROM predictions_by_day
+    FROM predictions_by_day_asc
     WHERE day = '{day}'
     """
     rows = session.execute(query)
@@ -101,7 +101,7 @@ def get_fraud_suspicious_count_by_hour(day: str) -> pd.DataFrame:
 def get_total_fraud_amount(day: str) -> float:
     query = f"""
     SELECT SUM(amount) 
-    FROM predictions_by_day 
+    FROM predictions_by_day_asc 
     WHERE day = '{day}' AND class = 'Fraud'
     ALLOW FILTERING
     """
@@ -109,7 +109,7 @@ def get_total_fraud_amount(day: str) -> float:
     return result['system.sum(amount)']
 
 def get_latest_transaction(count: int) -> pd.DataFrame:
-    query = f"SELECT * FROM predictions_by_day LIMIT {count}"
+    query = f"SELECT * FROM predictions_by_day_asc LIMIT {count}"
     rows = session.execute(query)
     df = pd.DataFrame(list(rows))
     if not df.empty:
@@ -118,12 +118,12 @@ def get_latest_transaction(count: int) -> pd.DataFrame:
 
 def get_avg_score_trend(time_unit="hour", day="20251224"):
     """
-    Lấy trend prediction_score trung bình theo giờ hoặc ngày từ bảng predictions_by_day.
+    Lấy trend prediction_score trung bình theo giờ hoặc ngày từ bảng predictions_by_day_asc.
     
     time_unit: "hour" hoặc "day"
     day: lọc dữ liệu theo ngày
     """
-    query = f"SELECT event_ts, prediction_score FROM predictions_by_day WHERE day='{day}'"
+    query = f"SELECT event_ts, prediction_score FROM predictions_by_day_asc WHERE day='{day}'"
     rows = session.execute(query)
     df = pd.DataFrame(list(rows))
     
@@ -149,7 +149,7 @@ def get_top_fraud(n=10, day="20251224"):
     """
     query = f"""
     SELECT event_ts, event_id, amount, prediction_score, class
-    FROM predictions_by_day 
+    FROM predictions_by_day_asc 
     WHERE day='{day}' AND class='Fraud'
     ALLOW FILTERING
     """
@@ -365,7 +365,7 @@ with Page() as overview_page:
 # def get_all_transaction(day: str) -> int:
 #     query = f"""
 #     SELECT COUNT(*)
-#     FROM predictions_by_day
+#     FROM predictions_by_day_asc
 #     WHERE day = '{day}'
 #     """
 #     result = session.execute(query).one()
