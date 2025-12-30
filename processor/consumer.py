@@ -6,9 +6,7 @@ import pandas as pd
 from datetime import datetime, timezone
 from cassandra.cluster import Cluster
 from cassandra.query import PreparedStatement
-from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent   # folder chứa file hiện tại
 # ---------- Redis ----------
 STREAM_IN = os.getenv("STREAM_IN", "cc_stream")
 GROUP = os.getenv("GROUP", "cc_group")
@@ -25,7 +23,7 @@ CASS_KEYSPACE = os.getenv("CASS_KEYSPACE", "fraud_detection")
 CASS_TABLE = os.getenv("CASS_TABLE", "predictions_by_day_asc")  # table name from .cql
 
 # ---------- Model ----------
-MODEL_PATH = os.getenv("MODEL_PATH", "models/LogisticRegression.pkl")
+MODEL_PATH = os.getenv("MODEL_PATH", "./models/LogisticRegression.pkl")
 PASSTHROUGH = ["Time", "Amount", "Class"]  # must exist in producer
 
 T_LOW = 0.15   # Example: Below 0.1 is Safe

@@ -2,11 +2,13 @@ import pandas as pd
 import redis
 import time
 import random
+import os
 
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
 stream = "cc_stream"
 
-df = pd.read_csv("data/creditcard.csv")
+DATA_PATH = os.getenv("DATA_PATH", "./data/creditcard.csv")
+df = pd.read_csv(DATA_PATH)
 
 MIN_DELAY = 3
 MAX_DELAY = 5

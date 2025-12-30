@@ -55,6 +55,9 @@ services:
     working_dir: /app
     volumes:
       - ./processor:/app
+      - ./data:/app/data
+    environment:
+      - DATA_PATH=./data/creditcard.csv
     command: python -u producer.py
     depends_on:
       - redis
@@ -66,6 +69,9 @@ services:
     working_dir: /app
     volumes:
       - ./processor:/app
+      - ./models:/app/models
+    environment:
+      - MODEL_PATH=./models/LogisticRegression.pkl
     command: python -u consumer.py
     depends_on:
       cassandra_init:
