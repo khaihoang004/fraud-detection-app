@@ -1,19 +1,19 @@
 import time
 from threading import Thread
-from taipy.gui.builder import Page, part, layout, text, table, date, html, selector, chart, metric, menu, button
+from taipy.gui.builder import Page, part, layout, text, table, date, html, selector, chart, metric, menu, button, toggle
 from taipy.gui import Gui, Icon, navigate, notify
 from cassandra.cluster import Cluster
 from cassandra.query import dict_factory
-import random as rand
 import pandas as pd
 import os
+import json
 
 UPDATE_INTERVAL = 0.5
-NUM_RECENT_TRANSACTION = 5
-NUM_TOP_FRAUD = 5
+NUM_RECENT_TRANSACTION = 10
+NUM_TOP_FRAUD = 10
 
 # Connect to Cassandra
-CASSANDRA_HOST = os.getenv("CASSANDRA_HOST", "127.0.0.1")  # default localhost nếu ngoài docker
+CASSANDRA_HOST = os.getenv("CASSANDRA_HOST", "127.0.0.1")
 
 cluster = Cluster([CASSANDRA_HOST], port=9042)
 session = cluster.connect('fraud_detection')
@@ -22,6 +22,9 @@ session.row_factory = dict_factory
 # UI server
 UI_HOST = os.getenv("UI_HOST", "0.0.0.0")
 UI_PORT = int(os.getenv("UI_PORT", 5002))
+
+# Rules
+RULE_FILE = "rules/rules.json"
 
 #######################################################
 # Overview Page
@@ -101,28 +104,27 @@ def get_fraud_suspicious_count_by_hour(day: str) -> pd.DataFrame:
 def get_total_fraud_amount(day: str) -> float:
     query = f"""
     SELECT SUM(amount) 
-    FROM predictions_by_day_asc 
+    FROM predictions_by_day_asc
     WHERE day = '{day}' AND class = 'Fraud'
     ALLOW FILTERING
     """
     result = session.execute(query).one()
     return result['system.sum(amount)']
 
-def get_latest_transaction(count: int) -> pd.DataFrame:
-    query = f"SELECT * FROM predictions_by_day_asc LIMIT {count}"
+def get_latest_transaction(count: int, day) -> pd.DataFrame:
+    query = f"""
+    SELECT * 
+    FROM predictions_by_day_asc
+    WHERE day='{day}'
+    ORDER BY event_ts DESC
+    LIMIT {count}"""
     rows = session.execute(query)
     df = pd.DataFrame(list(rows))
     if not df.empty:
-        df['prediction_score'] = pd.to_numeric(df['prediction_score'], errors='coerce').round(2)
+        df['prediction_score'] = pd.to_numeric(df['prediction_score'], errors='coerce').round(4)
     return df
 
 def get_avg_score_trend(time_unit="hour", day="20251224"):
-    """
-    Lấy trend prediction_score trung bình theo giờ hoặc ngày từ bảng predictions_by_day_asc.
-    
-    time_unit: "hour" hoặc "day"
-    day: lọc dữ liệu theo ngày
-    """
     query = f"SELECT event_ts, prediction_score FROM predictions_by_day_asc WHERE day='{day}'"
     rows = session.execute(query)
     df = pd.DataFrame(list(rows))
@@ -149,7 +151,7 @@ def get_top_fraud(n=10, day="20251224"):
     """
     query = f"""
     SELECT event_ts, event_id, amount, prediction_score, class
-    FROM predictions_by_day_asc 
+    FROM predictions_by_day_asc
     WHERE day='{day}' AND class='Fraud'
     ALLOW FILTERING
     """
@@ -164,32 +166,36 @@ def get_top_fraud(n=10, day="20251224"):
     return df
 
 # Global state variables
+today = "20251230"
 n_trans_today = 0
 fraud_count = 0
 fraud_rate = 0
 total_fraud_amount = 0
-latest_transaction = get_latest_transaction(NUM_RECENT_TRANSACTION)
+latest_transaction = get_latest_transaction(NUM_RECENT_TRANSACTION, today)
 score_trend_df = get_avg_score_trend()
-top_fraud_df = get_top_fraud(n=NUM_TOP_FRAUD)
-total_alert_df  = pd.DataFrame()
+top_fraud = get_top_fraud(n=NUM_TOP_FRAUD, day=today)
+
+# total_alert_df  = pd.DataFrame()
+rules_overlay_enabled = False
+
+
 # Update data
 def update_dashboard(gui: Gui, count=10, interval=0.5):
-    today = "20251225" 
+    today = "20251230"
     global latest_transaction
     global n_trans_today
     global fraud_count
     global total_fraud_amount
     global fraud_rate
-    global top_fraud_df
+    global top_fraud
     
     while True:
         try:
             total_trans = get_total_transactions(today)
             f_count = get_fraud_count(today)
             f_amount = get_total_fraud_amount(today)
-            df_recent = get_latest_transaction(count)
-            top_fraud_df = get_top_fraud(count)
-            
+            df_recent = get_latest_transaction(count, today)
+            df_top_fraud = get_top_fraud(count, today)
             f_rate = round((f_count / total_trans * 100), 2) if total_trans > 0 else 0
 
             try:
@@ -198,7 +204,7 @@ def update_dashboard(gui: Gui, count=10, interval=0.5):
                 gui.broadcast_callback(lambda state: state.assign("fraud_rate", f_rate))
                 gui.broadcast_callback(lambda state: state.assign("total_fraud_amount", f_amount))
                 gui.broadcast_callback(lambda state: state.assign("latest_transaction", df_recent))
-                gui.broadcast_callback(lambda state: state.assign("top_fraud_df", top_fraud_df))
+                gui.broadcast_callback(lambda state: state.assign("top_fraud", df_top_fraud))
             except Exception as e:
                 print(f"Lỗi khi cập nhật: {e}")
             
@@ -218,61 +224,85 @@ def update_score_trend(gui: Gui, interval=900, time_unit="hour"):
             print(f"Lỗi khi lấy trend prediction_score: {e}")
             time.sleep(5)
 
-def update_alert_by_hour(gui: Gui, interval=2):
-    global total_alert_df
-    today = "20251225" 
+# def update_alert_by_hour(gui: Gui, interval=2):
+#     global total_alert_df
+#     today = "20251225" 
     
-    while True:
-        try:
-            alert_df = get_fraud_suspicious_count_by_hour(today)
-            gui.broadcast_callback(lambda state: state.assign("total_alert_df", alert_df))
-            time.sleep(interval)
-            print(alert_df)
-        except Exception as e:
-            print(f"Lỗi khi lấy trend prediction_score: {e}")
-            time.sleep(5)
+#     while True:
+#         try:
+#             alert_df = get_fraud_suspicious_count_by_hour(today)
+#             gui.broadcast_callback(lambda state: state.assign("total_alert_df", alert_df))
+#             time.sleep(interval)
+#         except Exception as e:
+#             print(f"Lỗi khi lấy trend prediction_score: {e}")
+#             time.sleep(5)
 
                       
-def score_class(score: float) -> str:
-    if score >= 7.5:
+def score_class(score) -> str:
+    if float(score) >= 0.8:
         return "score-high"
-    elif score >= 5:
-        return "score-mid-high"
-    elif score >= 2.5:
-        return "score-mid-low"
+    elif float(score) >= 0.15:
+        return "score-mid"
     else:
         return "score-low"
 
-def apply_rules(state):
-    """
-    Apply rule overlay to predictions
-    """
-    # 1. Load data
-    df = state.latest_transaction.copy()
+def load_rules():
+    if not os.path.exists(RULE_FILE):
+        return []
+    with open(RULE_FILE) as f:
+        return json.load(f)
 
-    # 2. Apply rules (ví dụ)
-    # rule: amount > 10k & score > 0.7 → force fraud
-    df["rule_flag"] = (
-        (df["amount"] > 10000) &
-        (df["prediction_score"] > 0.7)
-    )
+def check_rule(row, rule):
+    if not rule.get("enabled", True):
+        return False
 
-    # 3. Overlay rule
-    df["final_fraud"] = df["prediction_score"] > 0.5
-    df.loc[df["rule_flag"], "final_fraud"] = True
+    op = rule["op"]
+    field = rule["field"]
+    value = rule["value"]
 
-    # 4. Update UI state
-    state.latest_transaction = df
-    state.top_fraud_df = df[df["final_fraud"]].sort_values(
-        "prediction_score", ascending=False
-    )
+    val = row.get(field, None)
+    if val is None:
+        return False
 
-    # 5. Optional: update KPI
-    state.fraud_count = df["final_fraud"].sum()
-    state.fraud_rate = round(
-        state.fraud_count / max(len(df), 1) * 100, 2
-    )
-    
+    match = False
+    if op == "==":
+        match = val == value
+    elif op == ">":
+        match = val > value
+    elif op == "<":
+        match = val < value
+    elif op == ">=":
+        match = val >= value
+    elif op == "<=":
+        match = val <= value
+    elif op == "!=":
+        match = val != value
+
+    # Kiểm tra điều kiện "and"
+    if match and "and" in rule:
+        match = check_rule(row, rule["and"])
+
+    return match
+
+def get_highlight_class(row, rules_enabled):
+    if not rules_enabled:
+        return ""
+    for rule in load_rules():
+        if check_rule(row, rule):
+            return "highlight-rule"
+    return ""
+
+def is_display_fraud(row, rules_enabled):
+    model_fraud = row["prediction_score"] > 0.5
+    if not rules_enabled:
+        return model_fraud
+    rule_fraud = any(check_rule(row, r) for r in load_rules())
+    return model_fraud or rule_fraud
+
+def on_toggle_rules(state):
+    # Không cần chỉnh DataFrame
+    pass
+        
 with Page() as overview_page:
     with part(class_name="topbar"):
         text(value="Fraud Detection Dashboard", class_name="topbar-text")
@@ -299,32 +329,33 @@ with Page() as overview_page:
             with part(class_name="recent-transaction"):
                 with layout(columns="2 1"):
                     text(value="### Top fraud", mode="md")
-                    
-                    button(
-                        label="Apply Rules Overlay",
-                        on_action=apply_rules,
-                        class_name="btn-apply-rules"
+
+                    toggle(
+                        value="{rules_overlay_enabled}",
+                        label="Rules Overlay",
+                        on_change=on_toggle_rules,
                     )
-                
-                num_items = min(len(top_fraud_df), NUM_TOP_FRAUD)
+
+                num_items = min(len(top_fraud), NUM_TOP_FRAUD)
                 if num_items == 0:
                     text(f"#### -- No fraud detected --", mode="md")
                 
                 for i in range(NUM_TOP_FRAUD):
-                    condition = f"len(top_fraud_df) > {i}"
+                    condition = f"len(top_fraud) > {i}"
                     
-                    with part(class_name="item"):
+                    with part(class_name=f"item {{get_highlight_class(top_fraud.iloc[{i}], rules_overlay_enabled)}}"):
                         with layout(columns="3 2"):
                             with part():
-                                text(f"Event ID: {{top_fraud_df.iloc[{i}]['event_id'] if {condition} else '---'}}")
+                                text(f"Event ID: {{top_fraud.iloc[{i}]['event_id'] if {condition} else '---'}}")
                             
                             with layout(columns="1 1"):
                                 with part(class_name="text-right"):
                                     text("Score:")
                                 
                                 with part(class_name="text-left"):
-                                    text(f"{{top_fraud_df.iloc[{i}]['prediction_score'] if {condition} else '0'}}", 
-                                            class_name=f"score {{score_class(top_fraud_df.iloc[{i}]['prediction_score']) if {condition} else ''}}")                                
+                                    text(f"{{top_fraud.iloc[{i}]['prediction_score'] if {condition} else '0'}}", 
+                                            class_name=f"score {{score_class(top_fraud.iloc[{i}]['prediction_score']) if {condition} else ''}}")                                
+
 
             with part(class_name="recent-transaction"):
                 text(value="### Average Fraud Prediction Score over hours", mode="md")
@@ -334,15 +365,14 @@ with Page() as overview_page:
                     y="avg_score",
                     type="line"
                 )
-        
-        
+
         with part(class_name="recent-transaction"):
             text(value="### Recent Transaction", mode="md")
             
             for i in range(NUM_RECENT_TRANSACTION):
                 condition = f"len(latest_transaction) > {i}"
                 
-                with part(class_name="item"):
+                with part(class_name=f"item {{get_highlight_class(top_fraud.iloc[{i}], rules_overlay_enabled)}}"):
                     with layout(columns="3 2"):
                         with part():
                             text(f"Event ID: {{latest_transaction.iloc[{i}]['event_id'] if {condition} else '---'}}")
@@ -365,7 +395,7 @@ with Page() as overview_page:
 # def get_all_transaction(day: str) -> int:
 #     query = f"""
 #     SELECT COUNT(*)
-#     FROM predictions_by_day_asc
+#     FROM predictions_by_day
 #     WHERE day = '{day}'
 #     """
 #     result = session.execute(query).one()
@@ -523,8 +553,8 @@ t.start()
 t1 = Thread(target=update_score_trend, args=(gui, UPDATE_INTERVAL), daemon=True)
 t1.start()
 
-t2 = Thread(target=update_alert_by_hour, args=(gui, UPDATE_INTERVAL), daemon=True)
-t2.start()
+# t2 = Thread(target=update_alert_by_hour, args=(gui, UPDATE_INTERVAL), daemon=True)
+# t2.start()
 
 gui.run(
     host=UI_HOST,
