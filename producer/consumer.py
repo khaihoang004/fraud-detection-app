@@ -20,7 +20,7 @@ r = redis.Redis(host="redis", port=6379, decode_responses=True)
 # ---------- Cassandra ----------
 CASS_HOST = os.getenv("CASS_HOST", "cassandra")
 CASS_KEYSPACE = os.getenv("CASS_KEYSPACE", "fraud_detection")
-CASS_TABLE = os.getenv("CASS_TABLE", "predictions_by_day")  # table name from .cql
+CASS_TABLE = os.getenv("CASS_TABLE", "predictions_by_day_asc")  # table name from .cql
 
 # ---------- Model ----------
 MODEL_PATH = os.getenv("MODEL_PATH", "LogisticRegression.pkl")
