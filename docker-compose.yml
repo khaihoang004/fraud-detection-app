@@ -6,6 +6,15 @@ services:
       - "6379:6379"
     restart: unless-stopped
 
+  redisinsight:
+    image: redis/redisinsight:latest
+    container_name: redisinsight
+    ports:
+      - "5540:5540"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
   cassandra:
     image: cassandra:4.1
     container_name: cassandra
@@ -30,29 +39,34 @@ services:
       - ./producer/cassandra/cassandra-setup.cql:/cassandra-setup.cql:ro
     entrypoint: [ "/bin/bash", "-lc" ]
     command: >
-      "cqlsh cassandra 9042 -f /cassandra-setup.cql && echo '✅ CQL applied'"
+      "cqlsh cassandra 9042 -f /cassandra-setup.cql &&
+       echo '✅ CQL applied'"
     restart: "no"
 
+  # ======================
+  # Python base image
+  # ======================
   producer:
-    image: python:3.10-slim
+    build:
+      context: .
+      dockerfile: Dockerfile.python
+    image: fraud-python:latest
     container_name: cc-producer
     working_dir: /app
     volumes:
       - ./producer:/app
-    command: bash -lc "pip -q install -U redis pandas && python -u producer.py"
+    command: python -u producer.py
     depends_on:
       - redis
     restart: on-failure
 
-
-
   consumer:
-    image: python:3.10-slim
+    image: fraud-python:latest
     container_name: cc-consumer
     working_dir: /app
     volumes:
       - ./producer:/app
-    command: bash -lc "pip -q install -U redis pandas joblib scikit-learn cassandra-driver && python -u consumer.py"
+    command: python -u consumer.py
     depends_on:
       cassandra_init:
         condition: service_completed_successfully
@@ -61,18 +75,18 @@ services:
     restart: on-failure
 
   monitor:
-    image: python:3.10-slim
+    image: fraud-python:latest
     container_name: cc-monitor
     working_dir: /app
     volumes:
       - ./producer:/app
-    command: bash -lc "pip -q install -U redis && python -u monitor.py"
+    command: python -u monitor.py
     depends_on:
       - redis
     restart: on-failure
 
   ui:
-    image: python:3.10-slim
+    image: fraud-python:latest
     container_name: cc-ui
     working_dir: /app
     volumes:
@@ -81,7 +95,7 @@ services:
       - CASSANDRA_HOST=cassandra
       - UI_HOST=0.0.0.0
       - UI_PORT=5000
-    command: bash -lc "pip install taipy redis pandas cassandra-driver && python ui.py"
+    command: python ui.py
     ports:
       - "5000:5000"
     depends_on:
@@ -89,15 +103,6 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_started
-
-  redisinsight:
-    image: redis/redisinsight:latest
-    container_name: redisinsight
-    ports:
-      - "5540:5540"
-    depends_on:
-      - redis
-    restart: unless-stopped
 
 volumes:
   cassandra_data:
