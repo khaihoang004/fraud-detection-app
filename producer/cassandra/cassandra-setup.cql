@@ -11,4 +11,4 @@ CREATE TABLE IF NOT EXISTS fraud_detection.predictions_by_day (
   prediction_score double,
   class text,
   PRIMARY KEY ((day), event_ts, event_id)
-) WITH CLUSTERING ORDER BY (event_ts DESC);
+) WITH CLUSTERING ORDER BY (event_ts ASC);
