@@ -88,7 +88,7 @@ body {
 
 .score {
     display: inline-block;
-    width: 50px;
+    width: 70px;
     height: 30px;
     text-align: center;
     border-radius: var(--border-radius);
@@ -101,12 +101,10 @@ body {
 .score-low {
     background-color: var(--color-success)
 }
-.score-mid-low {
+.score-mid {
     background-color: var(--color-warning)
 }
-.score-mid-high {
-    background-color: var(--color-warning)
-}
+
 .score-high {
     background-color: var(--color-error)
 }
@@ -155,4 +153,9 @@ body {
 
 .spacer {
     height: 2px;
+}
+
+.highlight-rule {
+    background-color: #ffcccc;
+    font-weight: bold;
 }
