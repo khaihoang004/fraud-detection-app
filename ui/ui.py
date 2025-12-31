@@ -24,7 +24,7 @@ UI_HOST = os.getenv("UI_HOST", "0.0.0.0")
 UI_PORT = int(os.getenv("UI_PORT", 5002))
 
 # Rules
-RULE_FILE = "rules/rules.json"
+RULE_FILE = "rules.json"
 
 #######################################################
 # Overview Page
@@ -177,7 +177,7 @@ top_fraud = get_top_fraud(n=NUM_TOP_FRAUD, day=today)
 
 # total_alert_df  = pd.DataFrame()
 rules_overlay_enabled = False
-
+rules = []
 
 # Update data
 def update_dashboard(gui: Gui, count=10, interval=0.5):
@@ -188,6 +188,7 @@ def update_dashboard(gui: Gui, count=10, interval=0.5):
     global total_fraud_amount
     global fraud_rate
     global top_fraud
+    global rules
     
     while True:
         try:
@@ -197,6 +198,10 @@ def update_dashboard(gui: Gui, count=10, interval=0.5):
             df_recent = get_latest_transaction(count, today)
             df_top_fraud = get_top_fraud(count, today)
             f_rate = round((f_count / total_trans * 100), 2) if total_trans > 0 else 0
+            
+            rules = load_rules()
+            df_recent = apply_rules_to_df(df_recent, rules)
+            df_top_fraud = apply_rules_to_df(df_top_fraud, rules)
 
             try:
                 gui.broadcast_callback(lambda state: state.assign("n_trans_today", total_trans))
@@ -246,62 +251,89 @@ def score_class(score) -> str:
     else:
         return "score-low"
 
-def load_rules():
+def load_rules() -> list:
     if not os.path.exists(RULE_FILE):
         return []
     with open(RULE_FILE) as f:
         return json.load(f)
 
-def check_rule(row, rule):
+def get_rules(state):
+    """
+    Cache rules trong state để tránh load lại mỗi lần render
+    """
+    if not hasattr(state, "rules_cache"):
+        state.rules_cache = load_rules()
+    return state.rules_cache
+
+def check_rule(row: dict, rule: dict) -> bool:
+    """
+    Check 1 rule với 1 row (row là dict)
+    """
     if not rule.get("enabled", True):
         return False
 
-    op = rule["op"]
-    field = rule["field"]
-    value = rule["value"]
+    field = rule.get("field")
+    op = rule.get("op")
+    value = rule.get("value")
 
-    val = row.get(field, None)
-    if val is None:
+    if field not in row:
         return False
 
-    match = False
-    if op == "==":
-        match = val == value
-    elif op == ">":
-        match = val > value
-    elif op == "<":
-        match = val < value
-    elif op == ">=":
-        match = val >= value
-    elif op == "<=":
-        match = val <= value
-    elif op == "!=":
-        match = val != value
+    val = row[field]
 
-    # Kiểm tra điều kiện "and"
+    try:
+        if op == "==":
+            match = val == value
+        elif op == "!=":
+            match = val != value
+        elif op == ">":
+            match = val > value
+        elif op == "<":
+            match = val < value
+        elif op == ">=":
+            match = val >= value
+        elif op == "<=":
+            match = val <= value
+        else:
+            return False
+    except Exception:
+        return False
+
+    # AND condition (nested rule)
     if match and "and" in rule:
-        match = check_rule(row, rule["and"])
+        return check_rule(row, rule["and"])
 
     return match
 
-def get_highlight_class(row, rules_enabled):
-    if not rules_enabled:
-        return ""
-    for rule in load_rules():
+def match_any_rule(row: dict, rules: list) -> bool:
+    """
+    True nếu row match ít nhất 1 rule
+    """
+    for rule in rules:
         if check_rule(row, rule):
-            return "highlight-rule"
-    return ""
+            return True
+    return False
 
-def is_display_fraud(row, rules_enabled):
-    model_fraud = row["prediction_score"] > 0.5
-    if not rules_enabled:
-        return model_fraud
-    rule_fraud = any(check_rule(row, r) for r in load_rules())
-    return model_fraud or rule_fraud
+def apply_rules_to_df(df: pd.DataFrame, rules: list) -> pd.DataFrame:
+    """
+    Thêm cột:
+    - rule_match: bool (row có match rule hay không)
+    """
+    if df.empty:
+        return df
+
+    df = df.copy()
+
+    df["rule_match"] = df.apply(
+        lambda r: match_any_rule(r.to_dict(), rules),
+        axis=1
+    )
+
+    return df
 
 def on_toggle_rules(state):
-    # Không cần chỉnh DataFrame
-    pass
+    state.rules_overlay_enabled = state.rules_overlay_enabled
+    print(state.latest_transaction)
         
 with Page() as overview_page:
     with part(class_name="topbar"):
@@ -335,6 +367,7 @@ with Page() as overview_page:
                         label="Rules Overlay",
                         on_change=on_toggle_rules,
                     )
+                    text(value="{rules_overlay_enabled}")
 
                 num_items = min(len(top_fraud), NUM_TOP_FRAUD)
                 if num_items == 0:
@@ -343,19 +376,25 @@ with Page() as overview_page:
                 for i in range(NUM_TOP_FRAUD):
                     condition = f"len(top_fraud) > {i}"
                     
-                    with part(class_name=f"item {{get_highlight_class(top_fraud.iloc[{i}], rules_overlay_enabled)}}"):
+                    # VIEW while OVERLAY DISABLED
+                    with part(render="{not rules_overlay_enabled}", class_name="item"):
                         with layout(columns="3 2"):
                             with part():
                                 text(f"Event ID: {{top_fraud.iloc[{i}]['event_id'] if {condition} else '---'}}")
-                            
                             with layout(columns="1 1"):
-                                with part(class_name="text-right"):
-                                    text("Score:")
-                                
-                                with part(class_name="text-left"):
-                                    text(f"{{top_fraud.iloc[{i}]['prediction_score'] if {condition} else '0'}}", 
-                                            class_name=f"score {{score_class(top_fraud.iloc[{i}]['prediction_score']) if {condition} else ''}}")                                
+                                text("Score:")
+                                text(f"{{top_fraud.iloc[{i}]['prediction_score'] if {condition} else '0'}}",
+                                    class_name=f"score {{score_class(top_fraud.iloc[{i}]['prediction_score']) if {condition} else ''}}")
 
+                    # VIEW while OVERLAY ENABLED
+                    with part(render="{rules_overlay_enabled}", class_name="item highlight-rule"):
+                        with layout(columns="3 2"):
+                            with part():
+                                text(f"Event ID: {{top_fraud.iloc[{i}]['event_id'] if {condition} else '---'}}")
+                            with layout(columns="1 1"):
+                                text("Score:")
+                                text(f"{{top_fraud.iloc[{i}]['prediction_score'] if {condition} else '0'}}",
+                                    class_name=f"score {{score_class(top_fraud.iloc[{i}]['prediction_score']) if {condition} else ''}}")
 
             with part(class_name="recent-transaction"):
                 text(value="### Average Fraud Prediction Score over hours", mode="md")
@@ -372,7 +411,8 @@ with Page() as overview_page:
             for i in range(NUM_RECENT_TRANSACTION):
                 condition = f"len(latest_transaction) > {i}"
                 
-                with part(class_name=f"item {{get_highlight_class(top_fraud.iloc[{i}], rules_overlay_enabled)}}"):
+                # VIEW while OVERLAY DISABLED
+                with part(render="{not rules_overlay_enabled}", class_name="item"):
                     with layout(columns="3 2"):
                         with part():
                             text(f"Event ID: {{latest_transaction.iloc[{i}]['event_id'] if {condition} else '---'}}")
@@ -384,7 +424,20 @@ with Page() as overview_page:
                             with part(class_name="text-left"):
                                 text(f"{{latest_transaction.iloc[{i}]['prediction_score'] if {condition} else '0'}}", 
                                         class_name=f"score {{score_class(latest_transaction.iloc[{i}]['prediction_score']) if {condition} else ''}}")                                
-
+                
+                # VIEW while OVERLAY ENABLED
+                with part(render="{rules_overlay_enabled}", class_name="item highlight-rule"):
+                    with layout(columns="3 2"):
+                        with part():
+                            text(f"Event ID: {{latest_transaction.iloc[{i}]['event_id'] if {condition} else '---'}}")
+                        
+                        with layout(columns="1 1"):
+                            with part(class_name="text-right"):
+                                text("Score:")
+                            
+                            with part(class_name="text-left"):
+                                text(f"{{latest_transaction.iloc[{i}]['prediction_score'] if {condition} else '0'}}", 
+                                        class_name=f"score {{score_class(latest_transaction.iloc[{i}]['prediction_score']) if {condition} else ''}}")
 
 
 # #######################################################
