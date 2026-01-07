@@ -334,7 +334,10 @@ def apply_rules_to_df(df: pd.DataFrame, rules: list) -> pd.DataFrame:
 def on_toggle_rules(state):
     state.rules_overlay_enabled = state.rules_overlay_enabled
     print(state.latest_transaction)
-        
+
+def highlight_rule(rule_match):
+    return "highlight-rule" if rule_match else ""
+
 with Page() as overview_page:
     with part(class_name="topbar"):
         text(value="Fraud Detection Dashboard", class_name="topbar-text")
@@ -367,7 +370,6 @@ with Page() as overview_page:
                         label="Rules Overlay",
                         on_change=on_toggle_rules,
                     )
-                    text(value="{rules_overlay_enabled}")
 
                 num_items = min(len(top_fraud), NUM_TOP_FRAUD)
                 if num_items == 0:
@@ -426,7 +428,7 @@ with Page() as overview_page:
                                         class_name=f"score {{score_class(latest_transaction.iloc[{i}]['prediction_score']) if {condition} else ''}}")                                
                 
                 # VIEW while OVERLAY ENABLED
-                with part(render="{rules_overlay_enabled}", class_name="item highlight-rule"):
+                with part(render="{rules_overlay_enabled}", class_name=f"item {{highlight_rule(latest_transaction.iloc[{i}]['rule_match'])}}"):
                     with layout(columns="3 2"):
                         with part():
                             text(f"Event ID: {{latest_transaction.iloc[{i}]['event_id'] if {condition} else '---'}}")
