@@ -1,6 +1,6 @@
 import time
 from threading import Thread
-from taipy.gui.builder import Page, part, layout, text, table, date, html, selector, chart, metric, menu, button, toggle
+from taipy.gui.builder import Page, part, layout, text, table, date, html, selector, chart, metric, menu, button, toggle, input
 from taipy.gui import Gui, Icon, navigate, notify
 from cassandra.cluster import Cluster
 from cassandra.query import dict_factory
@@ -441,142 +441,182 @@ with Page() as overview_page:
                                 text(f"{{latest_transaction.iloc[{i}]['prediction_score'] if {condition} else '0'}}", 
                                         class_name=f"score {{score_class(latest_transaction.iloc[{i}]['prediction_score']) if {condition} else ''}}")
 
+#######################################################
+# Rule Page
+#######################################################
+def add_rule(state):
+    if not state.selected_field or not state.rule_value.strip():
+        notify(state, "warning", "Missing field or value")
+        return
 
-# #######################################################
-# # Rule Page
-# #######################################################
+    try:
+        value = float(state.rule_value)
+    except ValueError:
+        value = state.rule_value
 
-# # Extract data from database
-# def get_all_transaction(day: str) -> int:
-#     query = f"""
-#     SELECT COUNT(*)
-#     FROM predictions_by_day
-#     WHERE day = '{day}'
-#     """
-#     result = session.execute(query).one()
-#     print(result)
-#     return int(result['count']) if result else 0
+    rule = {
+        "field": state.selected_field,
+        "op": state.selected_op,
+        "value": value,
+        "enabled": True
+    }
+
+    state.rules_list.append(rule)
+    state.rules_list = state.rules_list[:]
+
+    save_rules(state.rules_list)
+
+    sync_rules_df(state)
+
+    all_df = get_all_transactions_for_preview(today)
+    state.preview_df = apply_rules_to_df(all_df, state.rules_list)
+
+    state.rule_value = ""
+    notify(state, "success", "Rule added")
 
 
-# # Global state variables
-# rules_df = 
+def get_all_transactions_for_preview(day="20251224") -> pd.DataFrame:
+    """
+    Lấy toàn bộ giao dịch trong ngày để preview rule
+    """
+    query = f"""
+    SELECT event_ts, event_id, amount, prediction_score, class
+    FROM predictions_by_day_asc
+    WHERE day='{day}'
+    """
+    rows = session.execute(query)
+    df = pd.DataFrame(list(rows))
 
-# # Update data
-# def update_score_trend(gui: Gui, interval=900, time_unit="hour"):
-#     global score_trend_df
-#     while True:
-#         try:
-#             trend_df = get_avg_score_trend(time_unit)
-#             gui.broadcast_callback(lambda state: state.assign("score_trend_df", trend_df))
-#             time.sleep(interval)
-#         except Exception as e:
-#             print(f"Lỗi khi lấy trend prediction_score: {e}")
-#             time.sleep(5)
-            
-            
-            
-            
-            
-# def add_rule(state):
-#     if not state.selected_column or not state.rule_value:
-#         notify(state, "warning", "⚠️ Missing column or value")
-#         return
+    if df.empty:
+        return pd.DataFrame(
+            columns=["event_ts", "event_id", "amount", "prediction_score", "class"]
+        )
 
-#     # Tạo object theo đúng Schema RuleModel của FastAPI
-#     rule = {
-#         "rule_id": f"R_{state.selected_column.upper()}_{uuid.uuid4().hex[:6]}",
-#         "template": "condition",
-#         "params": {
-#             "field": state.selected_column,
-#             "op": state.selected_operator,
-#             "value": float(state.rule_value) if state.rule_value.replace('.','',1).isdigit() else state.rule_value
-#         },
-#         "severity": "high",
-#         "enabled": True
-#     }
+    df["prediction_score"] = pd.to_numeric(
+        df["prediction_score"], errors="coerce"
+    ).round(4)
 
-#     # Cập nhật danh sách rules hiển thị trên UI
-#     state.rules_list = state.rules_list + [rule]
-#     new_row = pd.DataFrame([{
-#         "column": rule["params"]["field"],
-#         "operator": rule["params"]["op"],
-#         "value": rule["params"]["value"]
-#     }])
-#     state.rules_df = pd.concat([state.rules_df, new_row], ignore_index=True)
-#     state.rule_value = ""
-#     notify(state, "success", "Rule added to local list!")
+    df["amount"] = pd.to_numeric(df["amount"], errors="coerce")
 
-# def reset_all(state):
-#     state.rules_list = []
-#     state.rules_df = pd.DataFrame(columns=['column', 'operator', 'value'])
-#     notify(state, "info", "Cleared all local rules")
+    return df
 
-# def save_rules(state):
-#     if not state.rules_list:
-#         notify(state, "warning", "No rules to save!")
-#         return
+
+def get_rule_preview_df(day="20251224"):
+    df = get_all_transactions_for_preview(day)
+    rules = load_rules()
+    return apply_rules_to_df(all_df, rules)
+
+
+def save_rules(rules):
+    with open(RULE_FILE, "w") as f:
+        json.dump(rules, f, indent=2)
         
-#     success = 0
-#     for rule in state.rules_list:
-#         try:
-#             # Gửi từng rule lên FastAPI
-#             resp = requests.post(RULE_API_URL, json=rule, timeout=5)
-#             if resp.status_code == 200:
-#                 success += 1
-#             else:
-#                 print(f"Failed: {resp.text}")
-#         except Exception as e:
-#             notify(state, "error", f"API connection error: {e}")
-#             break
+def remove_selected_rule(state):
+    if state.selected_rule is None:
+        notify(state, "warning", "Select a rule first")
+        return
 
-#     notify(state, "success", f"✅ Successfully deployed {success} rules to Kafka!")
+    idx = state.rules_df.index[state.rules_df["rule_id"] == state.selected_rule]
 
-# with Page() as rule_page:
-#     with part(class_name="topbar"):
-#         text(value="Rule Overlay", class_name="topbar-text")
-        
-#         with layout("1 2"):
-#             with part():
-#                 with part(class_name="card"):
-#                     text("#### Create New Rule", mode="md")
-#                     with layout("1 1 1"):
-#                         selector(label="Field", value="{selected_column}", lov="{col_options}", dropdown=True)
-#                         selector(label="Operator", value="{selected_operator}", lov="{OPS}", dropdown=True)
-#                         input(label="Value", value="{rule_value}")
+    if len(idx) == 0:
+        return
+
+    state.rules_list.pop(idx[0])
+    state.rules_list = state.rules_list[:]
+
+    save_rules(state.rules_list)
+    sync_rules_df(state)
+
+    all_df = get_all_transactions_for_preview(today)
+    state.preview_df = apply_rules_to_df(all_df, state.rules_list)
+
+    notify(state, "info", "Rule removed")
+
+def toggle_rule(state, idx):
+    state.rules_list[idx]["enabled"] = not state.rules_list[idx]["enabled"]
+    state.rules_list = state.rules_list[:]
+    save_rules(state.rules_list)
+
+    all_df = get_all_transactions_for_preview(today)
+    state.preview_df = apply_rules_to_df(all_df, state.rules_list)
+
+def sync_rules_df(state):
+    state.rules_df = pd.DataFrame(state.rules_list)
+    
+# Global state variables
+selected_field = "amount"
+selected_op = ">"
+rule_value = " "
+rules_list = load_rules()
+rules_df = pd.DataFrame(rules_list)
+
+all_df = get_all_transactions_for_preview(today)
+preview_df = apply_rules_to_df(all_df, rules_list)
+
+selected_rule = None
+
+FIELDS = list(all_df.columns)
+OPS = ["==", "!=", ">", "<", ">=", "<="]
+
+with Page() as rule_page:
+    text("## 🛡 Rule Management", mode="md")
+
+    with layout("1 2"):
+        # ===============================
+        # LEFT: Rule editor
+        # ===============================
+        with part():
+            with part(class_name="card"):
+                text("### Add New Rule", mode="md")
+
+                with layout("1 1 1"):
+                    selector("Field", value="{selected_field}", lov="{FIELDS}", dropdown=True)
+                    selector("Operator", value="{selected_op}", lov="{OPS}", dropdown=True)
+                    input("Value", value="{rule_value}")
+
+                button("➕ Add Rule", on_action=add_rule, class_name="fullwidth")
+
+                with part(class_name="card"):
+                    text("### Existing Rules", mode="md")
+
+                    table(
+                        data="{rules_df}",
+                        page_size=6
+                    )
+
+                    button(
+                        "❌ Remove Selected Rule",
+                        on_action=remove_selected_rule,
+                        class_name="fullwidth"
+                    )
+
+        # ===============================
+        # RIGHT: Preview
+        # ===============================
+        with part():
+            with part(class_name="card"):
+                text("### Preview (rule_match)", mode="md")
+                table(data="{preview_df}", page_size=6)
+
+            with layout("1 1"):
+                with part(class_name="card"):
+                    text("Matched Rows", class_name="card-title")
+                    text(
+                        value="{preview_df['rule_match'].sum()}",
+                        class_name="card-amount"
+                    )
+
+                with part(class_name="card"):
+                    text("Total Rows", class_name="card-title")
+                    text(
+                        value="{len(preview_df)}",
+                        class_name="card-amount"
+                    )
                     
-#                     button(label="➕ Add Rule", on_action=add_rule, class_name="fullwidth")
-                
-#                 with part(class_name="card"):
-#                     text("#### Pending Deployment", mode="md")
-#                     table(data="{rules_df}", height="200px", page_size=5)
-#                     with layout("1 1"):
-#                         button(label="🗑️ Clear", on_action=reset_all, class_name="secondary")
-#                         button(label="🚀 Deploy Rules", on_action=save_rules, class_name="primary")
-
-#             with part():
-#                 with part(class_name="card"):
-#                     text("#### Recent Transactions Preview", mode="md")
-#                     table(data="{filtered_df}", page_size=6)
-                
-#                 with layout("1 1"):
-#                     with part(class_name="card"):
-#                         text("Total Fraud Cases", class_name="text-secondary")
-#                         text("### {len(filtered_df[filtered_df['Class']==1])}", mode="md")
-#                     with part(class_name="card"):
-#                         text("Potential Loss", class_name="text-secondary")
-#                         text("### ${sum(filtered_df[filtered_df['Class']==1]['amount'])}", mode="md")
-
-
-
-
-
-
-
-
 menu_options = [
     ("overview", Icon("static/style.css", "Overview")),
     ("rule", "Rule"),
-    ("detail", "Detail")
+    # ("detail", "Detail")
 ]
 
 def on_menu_action(state, action, info):
@@ -597,7 +637,7 @@ with root_page:
 pages = {
     "/": root_page,
     "overview": overview_page,
-    # "rule": rule_page,
+    "rule": rule_page,
     # "detail": detail_page
 }
 
