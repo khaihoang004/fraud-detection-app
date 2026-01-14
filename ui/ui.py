@@ -165,23 +165,27 @@ def get_top_fraud(n=10, day="20251224"):
     
     return df
 
+def get_today() -> str:
+    return time.strftime("%Y%m%d")
+
 # Global state variables
-today = "20251230"
+today = get_today()
 n_trans_today = 0
 fraud_count = 0
 fraud_rate = 0
 total_fraud_amount = 0
 latest_transaction = get_latest_transaction(NUM_RECENT_TRANSACTION, today)
-score_trend_df = get_avg_score_trend()
+score_trend_df = get_avg_score_trend(day=today)
 top_fraud = get_top_fraud(n=NUM_TOP_FRAUD, day=today)
-
+print("___TOP FRAUD INITIAL___")
+print(top_fraud)
 # total_alert_df  = pd.DataFrame()
 rules_overlay_enabled = False
 rules = []
 
 # Update data
 def update_dashboard(gui: Gui, count=10, interval=0.5):
-    today = "20251230"
+    today = get_today()
     global latest_transaction
     global n_trans_today
     global fraud_count
@@ -327,13 +331,11 @@ def apply_rules_to_df(df: pd.DataFrame, rules: list) -> pd.DataFrame:
     df["rule_match"] = df.apply(
         lambda r: match_any_rule(r.to_dict(), rules),
         axis=1
-    )
-
+    )               
     return df
 
 def on_toggle_rules(state):
     state.rules_overlay_enabled = state.rules_overlay_enabled
-    print(state.latest_transaction)
 
 def highlight_rule(rule_match):
     return "highlight-rule" if rule_match else ""
@@ -372,6 +374,7 @@ with Page() as overview_page:
                     )
 
                 num_items = min(len(top_fraud), NUM_TOP_FRAUD)
+
                 if num_items == 0:
                     text(f"#### -- No fraud detected --", mode="md")
                 
@@ -383,20 +386,27 @@ with Page() as overview_page:
                         with layout(columns="3 2"):
                             with part():
                                 text(f"Event ID: {{top_fraud.iloc[{i}]['event_id'] if {condition} else '---'}}")
+                                
                             with layout(columns="1 1"):
-                                text("Score:")
-                                text(f"{{top_fraud.iloc[{i}]['prediction_score'] if {condition} else '0'}}",
-                                    class_name=f"score {{score_class(top_fraud.iloc[{i}]['prediction_score']) if {condition} else ''}}")
+                                with part(class_name="text-right"):
+                                    text("Score:")
+                            
+                                with part(class_name="text-left"):
+                                    text(f"{{top_fraud.iloc[{i}]['prediction_score'] if {condition} else '0'}}",
+                                        class_name=f"score {{score_class(top_fraud.iloc[{i}]['prediction_score']) if {condition} else ''}}")
 
                     # VIEW while OVERLAY ENABLED
-                    with part(render="{rules_overlay_enabled}", class_name="item highlight-rule"):
+                    with part(render="{rules_overlay_enabled}", class_name=f"item {{highlight_rule(top_fraud.iloc[{i}]['rule_match']) if {i} < num_items else ''}}"):
                         with layout(columns="3 2"):
                             with part():
                                 text(f"Event ID: {{top_fraud.iloc[{i}]['event_id'] if {condition} else '---'}}")
                             with layout(columns="1 1"):
-                                text("Score:")
-                                text(f"{{top_fraud.iloc[{i}]['prediction_score'] if {condition} else '0'}}",
-                                    class_name=f"score {{score_class(top_fraud.iloc[{i}]['prediction_score']) if {condition} else ''}}")
+                                with part(class_name="text-right"):
+                                    text("Score:")
+                                
+                                with part(class_name="text-left"):
+                                    text(f"{{top_fraud.iloc[{i}]['prediction_score'] if {condition} else '0'}}",
+                                        class_name=f"score {{score_class(top_fraud.iloc[{i}]['prediction_score']) if {condition} else ''}}")
 
             with part(class_name="recent-transaction"):
                 text(value="### Average Fraud Prediction Score over hours", mode="md")
@@ -409,7 +419,6 @@ with Page() as overview_page:
 
         with part(class_name="recent-transaction"):
             text(value="### Recent Transaction", mode="md")
-            
             for i in range(NUM_RECENT_TRANSACTION):
                 condition = f"len(latest_transaction) > {i}"
                 
@@ -466,11 +475,11 @@ def add_rule(state):
 
     save_rules(state.rules_list)
 
-    sync_rules_df(state)
-
     all_df = get_all_transactions_for_preview(today)
     state.preview_df = apply_rules_to_df(all_df, state.rules_list)
 
+    sync_rules_df(state)
+    
     state.rule_value = ""
     notify(state, "success", "Rule added")
 
@@ -511,26 +520,24 @@ def save_rules(rules):
     with open(RULE_FILE, "w") as f:
         json.dump(rules, f, indent=2)
         
-def remove_selected_rule(state):
-    if state.selected_rule is None:
-        notify(state, "warning", "Select a rule first")
+def remove_all_rules(state):
+    if not state.rules_list:
+        notify(state, "info", "No rules to remove")
         return
 
-    idx = state.rules_df.index[state.rules_df["rule_id"] == state.selected_rule]
-
-    if len(idx) == 0:
-        return
-
-    state.rules_list.pop(idx[0])
-    state.rules_list = state.rules_list[:]
-
+    # Clear rules
+    state.rules_list = []
     save_rules(state.rules_list)
-    sync_rules_df(state)
 
+    # Update preview
     all_df = get_all_transactions_for_preview(today)
     state.preview_df = apply_rules_to_df(all_df, state.rules_list)
 
-    notify(state, "info", "Rule removed")
+    # Sync dataframe
+    sync_rules_df(state)
+    
+    state.selected_rule = None
+    notify(state, "success", "All rules removed")
 
 def toggle_rule(state, idx):
     state.rules_list[idx]["enabled"] = not state.rules_list[idx]["enabled"]
@@ -540,9 +547,16 @@ def toggle_rule(state, idx):
     all_df = get_all_transactions_for_preview(today)
     state.preview_df = apply_rules_to_df(all_df, state.rules_list)
 
+def get_matched_fraud(df):
+    df = df[(df["class"] == "Fraud") & (df["rule_match"] == True)]
+    return len(df)
+
 def sync_rules_df(state):
     state.rules_df = pd.DataFrame(state.rules_list)
-    
+    num_fraud = get_matched_fraud(state.preview_df)
+    print(num_fraud)
+    state.matched_fraud = num_fraud
+
 # Global state variables
 selected_field = "amount"
 selected_op = ">"
@@ -552,6 +566,7 @@ rules_df = pd.DataFrame(rules_list)
 
 all_df = get_all_transactions_for_preview(today)
 preview_df = apply_rules_to_df(all_df, rules_list)
+matched_fraud = get_matched_fraud(preview_df)
 
 selected_rule = None
 
@@ -559,59 +574,67 @@ FIELDS = list(all_df.columns)
 OPS = ["==", "!=", ">", "<", ">=", "<="]
 
 with Page() as rule_page:
-    text("## 🛡 Rule Management", mode="md")
+    with part(class_name="topbar"):
+        text(value="Fraud Detection Dashboard", class_name="topbar-text")
 
-    with layout("1 2"):
-        # ===============================
-        # LEFT: Rule editor
-        # ===============================
-        with part():
-            with part(class_name="card"):
-                text("### Add New Rule", mode="md")
-
-                with layout("1 1 1"):
-                    selector("Field", value="{selected_field}", lov="{FIELDS}", dropdown=True)
-                    selector("Operator", value="{selected_op}", lov="{OPS}", dropdown=True)
-                    input("Value", value="{rule_value}")
-
-                button("➕ Add Rule", on_action=add_rule, class_name="fullwidth")
-
+    with part(class_name="content"):
+        text("## Rule Management", mode="md")
+        with layout("1 2"):
+            # ===============================
+            # LEFT: Rule editor
+            # ===============================
+            with part():
                 with part(class_name="card"):
-                    text("### Existing Rules", mode="md")
+                    text("### Add New Rule", mode="md")
 
-                    table(
-                        data="{rules_df}",
-                        page_size=6
-                    )
+                    with layout("1 1 1"):
+                        selector("Field", value="{selected_field}", lov="{FIELDS}", dropdown=True)
+                        selector("Operator", value="{selected_op}", lov="{OPS}", dropdown=True)
+                        input("Value", value="{rule_value}")
+
+                    button("➕ Add Rule", on_action=add_rule, class_name="fullwidth")
+
+                    with part(class_name="card"):
+                        text("### Existing Rules", mode="md")
+
+                        table(
+                            data="{rules_df}",
+                            page_size=6
+                        )
 
                     button(
-                        "❌ Remove Selected Rule",
-                        on_action=remove_selected_rule,
+                        "Remove All Rules",
+                        on_action=remove_all_rules,
                         class_name="fullwidth"
                     )
 
-        # ===============================
-        # RIGHT: Preview
-        # ===============================
-        with part():
-            with part(class_name="card"):
-                text("### Preview (rule_match)", mode="md")
-                table(data="{preview_df}", page_size=6)
-
-            with layout("1 1"):
+            # ===============================
+            # RIGHT: Preview
+            # ===============================
+            with part():
                 with part(class_name="card"):
-                    text("Matched Rows", class_name="card-title")
-                    text(
-                        value="{preview_df['rule_match'].sum()}",
-                        class_name="card-amount"
-                    )
+                    text("### Preview (rule_match)", mode="md")
+                    table(data="{preview_df}", page_size=6)
 
-                with part(class_name="card"):
-                    text("Total Rows", class_name="card-title")
-                    text(
-                        value="{len(preview_df)}",
-                        class_name="card-amount"
-                    )
+                with layout("1 1 1"):
+                    with part(class_name="card"):
+                        text("Matched Rows", class_name="card-title")
+                        text(
+                            value="{preview_df['rule_match'].sum()}",
+                            class_name="card-amount"
+                        )
+                    with part(class_name="card"):
+                        text("Total Rows", class_name="card-title")
+                        text(
+                            value="{len(preview_df)}",
+                            class_name="card-amount"
+                        )
+                    with part(class_name="card"):
+                        text("Matched Fraud", class_name="card-title")
+                        text(
+                            value="{matched_fraud}",
+                            class_name="card-amount"
+                        )
                     
 menu_options = [
     ("overview", Icon("static/style.css", "Overview")),
@@ -636,8 +659,8 @@ with root_page:
 
 pages = {
     "/": root_page,
-    "overview": overview_page,
     "rule": rule_page,
+    "overview": overview_page,
     # "detail": detail_page
 }
 
